@@ -1,5 +1,5 @@
 # app.py
-# MemeGen Pro — Streamlit Meme Generator (Fixed for Pillow ≥ 10)
+# MemeGen Pro — Streamlit Meme Generator with OpenRouter AI (x-ai/grok-4.1-fast:free) and Classic White Strap Top Text Layout
 
 import io
 import textwrap
@@ -12,68 +12,61 @@ import streamlit as st
 # -------------------------
 st.set_page_config(page_title="MemeGen Pro", page_icon="🖼️🤖", layout="centered")
 st.title("MemeGen Pro")
-st.markdown("Create memes fast — upload an image, select caption style, and get an AI-generated caption (free HuggingFace).")
+st.markdown("Create topic-aware memes using OpenRouter AI — upload an image, select caption style, and get an AI-generated caption with classic white top strap layout.")
 
 # -------------------------
-# HuggingFace free text-generation model
+# OpenRouter AI setup
 # -------------------------
-HF_MODEL = "distilgpt2"
-HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"]
+MODEL_NAME = "x-ai/grok-4.1-fast:free"
+OPENROUTER_URL = "https://api.openrouter.ai/v1/completions"
 
 # -------------------------
 # Helpers
 # -------------------------
 
-def call_hf_text_model(prompt: str, max_length: int = 60):
-    payload = {"inputs": prompt, "parameters": {"max_new_tokens": max_length, "return_full_text": False}}
+def call_openrouter_text_model(prompt: str, max_tokens: int = 60):
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": MODEL_NAME,
+        "input": prompt,
+        "max_output_tokens": max_tokens
+    }
     try:
-        r = requests.post(HF_API_URL, json=payload, timeout=30)
-    except Exception as e:
-        return None, f"Request failed: {e}"
-
-    if r.status_code != 200:
-        return None, f"HF API error {r.status_code}: {r.text}"
-
-    try:
+        r = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=30)
+        r.raise_for_status()
         data = r.json()
+        if "output" in data and len(data["output"]) > 0 and "content" in data["output"][0]:
+            return data["output"][0]["content"].strip(), None
+        return None, "No output in OpenRouter response"
     except Exception as e:
-        return None, f"Invalid JSON response: {e}"
-
-    if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
-        text = data[0].get("generated_text") or data[0].get("text")
-        if text:
-            return text.strip(), None
-    if isinstance(data, dict) and "generated_text" in data:
-        return data["generated_text"].strip(), None
-    if isinstance(data, str):
-        return data.strip(), None
-
-    return str(data).strip(), None
+        return None, str(e)
 
 
 def generate_caption(topic: str, style: str = "funny") -> str:
-    prompt = f"Write a short meme caption about '{topic}' in a {style} style. Keep it punchy, one or two short lines, suitable for a meme."
-    text, err = call_hf_text_model(prompt)
-    if err or not text:
-        fallback = [
-            "When you realize it's Monday again...",
-            "Me: *tries once*\nAlso me: *already an expert*",
-            "That face you make when Wi-Fi dies",
-            "I asked for coffee, got an emotional support mug instead",
-        ]
-        return fallback[hash(topic) % len(fallback)]
+    prompt = f"Write a short meme caption about '{topic}' in a {style} style. Keep it punchy, 1-2 lines."
+    text, err = call_openrouter_text_model(prompt, max_tokens=60)
 
-    text = text.replace("\n", " ").strip()
-    if len(text) > 140:
-        text = textwrap.shorten(text, width=120, placeholder="...")
+    if not text:
+        # fallback if API fails
+        fallback = [
+            f"When you think about {topic}...",
+            f"{topic}? Nailed it!",
+            f"The struggle with {topic} is real",
+            f"{topic} vibes 😎"
+        ]
+        text = fallback[hash(topic) % len(fallback)]
     return text
 
 
 def draw_text_on_image(image: Image.Image, text: str, font_path: str = None) -> Image.Image:
     img = image.convert("RGBA")
-    draw = ImageDraw.Draw(img)
     w, h = img.size
 
+    # Font
     font_size = max(24, int(w / 15))
     font = None
     if font_path:
@@ -87,25 +80,32 @@ def draw_text_on_image(image: Image.Image, text: str, font_path: str = None) -> 
         except Exception:
             font = ImageFont.load_default()
 
+    # Wrap text
     max_chars_per_line = max(20, int(w / (font_size * 0.6)))
     wrapped = textwrap.fill(text, width=max_chars_per_line)
     lines = wrapped.split("\n")
 
-    # Fixed line height calculation using getbbox (works in newer Pillow)
+    # Calculate height of text block
     bbox = font.getbbox("A")
     line_height = (bbox[3] - bbox[1]) + 6
     total_text_height = line_height * len(lines)
-    y = h - total_text_height - int(h * 0.05)
 
+    # Create new image with extra top space for white strap
+    new_img = Image.new("RGB", (w, h + total_text_height + 20), color="white")
+    new_img.paste(img, (0, total_text_height + 20))
+
+    draw = ImageDraw.Draw(new_img)
+
+    # Draw text on the white strap
+    y = 10  # padding from top
     for line in lines:
-        # Use textbbox to calculate line width (Pillow ≥ 10 safe)
-        bbox_line = draw.textbbox((0, 0), line, font=font, stroke_width=2)
+        bbox_line = draw.textbbox((0, 0), line, font=font)
         line_w = bbox_line[2] - bbox_line[0]
         x = (w - line_w) / 2
-        draw.text((x, y), line, font=font, fill="black", stroke_width=2, stroke_fill="white")
+        draw.text((x, y), line, font=font, fill="black")
         y += line_height
 
-    return img.convert("RGB")
+    return new_img
 
 # -------------------------
 # Streamlit UI
@@ -136,4 +136,4 @@ if st.button("Generate Caption & Preview"):
             st.success("Done — download your meme!")
 
 st.markdown("---")
-st.markdown("Made with ❤ — MemeGen Pro. Deploy easily to Streamlit Cloud.")
+st.markdown("Made with ❤ — MemeGen Pro using OpenRouter AI.")
