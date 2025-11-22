@@ -1,5 +1,5 @@
 # app.py
-# MemeGen Pro — Streamlit Meme Generator (Fixed for Streamlit Cloud Pillow Version)
+# MemeGen Pro — Streamlit Meme Generator (Fixed for Pillow ≥ 10)
 
 import io
 import textwrap
@@ -98,7 +98,9 @@ def draw_text_on_image(image: Image.Image, text: str, font_path: str = None) -> 
     y = h - total_text_height - int(h * 0.05)
 
     for line in lines:
-        line_w, line_h = draw.textsize(line, font=font)
+        # Use textbbox to calculate line width (Pillow ≥ 10 safe)
+        bbox_line = draw.textbbox((0, 0), line, font=font, stroke_width=2)
+        line_w = bbox_line[2] - bbox_line[0]
         x = (w - line_w) / 2
         draw.text((x, y), line, font=font, fill="black", stroke_width=2, stroke_fill="white")
         y += line_height
