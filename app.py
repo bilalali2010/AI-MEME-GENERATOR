@@ -1,98 +1,92 @@
-import streamlit as st
-import base64
+# app.py
+# MemeGen Pro — Streamlit Meme Generator (Upload image + HF caption generator)
+
+
+import io
+import textwrap
 import requests
-from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
+import streamlit as st
 
-# ---------------------------
-# CONFIG
-# ---------------------------
-API_URL = "https://api.together.xyz/v1/chat/completions"  # Free model
-MODEL_NAME = "deepseek-r1:free"
 
-# ---------------------------
-# AI CAPTION GENERATION
-# ---------------------------
-def generate_caption(user_prompt, api_key):
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+# -------------------------
+# App config
+# -------------------------
+st.set_page_config(page_title="MemeGen Pro", page_icon="🖼️🤖", layout="centered")
+st.title("MemeGen Pro")
+st.markdown("Create memes fast — upload an image, enter a topic/style and get an AI caption (free HuggingFace inference).")
 
-    payload = {
-        "model": MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": "You are an AI that writes short, funny meme captions."},
-            {"role": "user", "content": user_prompt}
-        ],
-        "max_tokens": 60
-    }
 
-    response = requests.post(API_URL, headers=headers, json=payload)
+# -------------------------
+# HuggingFace text-generation model (public inference endpoint)
+# No API key required for public endpoints; subject to HF usage limits.
+# You can change HF_MODEL to another public model if you prefer.
+# -------------------------
+HF_MODEL = "Qwen/Qwen2.5-1.5B-Instruct" # recommended default
+HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
 
-    if response.status_code != 200:
-        return "Error generating caption. Check API key."
 
-    return response.json()["choices"][0]["message"]["content"].strip()
+# -------------------------
+# Helpers
+# -------------------------
 
-# ---------------------------
-# ADD CAPTION TO IMAGE
-# ---------------------------
-def add_caption_to_image(image, caption_text):
-    img = image.convert("RGB")
-    draw = ImageDraw.Draw(img)
 
-    try:
-        font = ImageFont.truetype("arial.ttf", 40)
-    except:
-        font = ImageFont.load_default()
+def call_hf_text_model(prompt: str, max_length: int = 60):
+"""Call HuggingFace Inference API for text generation.
+The public inference endpoint returns JSON; structure may vary per model, so we try a few ways to extract text.
+"""
+payload = {"inputs": prompt, "parameters": {"max_new_tokens": max_length, "return_full_text": False}}
+try:
+r = requests.post(HF_API_URL, json=payload, timeout=30)
+except Exception as e:
+return None, f"Request failed: {e}"
 
-    text = caption_text
-    w, h = img.size
-    text_w, text_h = draw.textsize(text, font=font)
-    x = (w - text_w) / 2
-    y = h - text_h - 20
 
-    draw.text((x, y), text, fill="white", stroke_width=3, stroke_fill="black", font=font)
+if r.status_code != 200:
+# return the error text for debugging
+return None, f"HF API error {r.status_code}: {r.text}"
 
-    return img
 
-# ---------------------------
-# STREAMLIT UI
-# ---------------------------
-st.set_page_config(page_title="AI Meme Generator", layout="wide")
-st.title("😂 AI Meme Generator (Free Model)")
-st.write("Upload an image → Generate caption → Download meme")
+try:
+data = r.json()
+except Exception as e:
+return None, f"Invalid JSON response: {e}"
 
-api_key = st.text_input("Enter API Key (Together API)")
-user_input = st.text_input("Describe meme style or topic", "Make a funny caption about exams")
-image_file = st.file_uploader("Upload an image", type=["jpg", "png", "jpeg"])
 
-if image_file:
-    image = Image.open(image_file)
-    st.image(image, caption="Uploaded Image", width=400)
+# Models sometimes return a list of {generated_text: ...} or a string. Try to handle common cases.
+if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+text = data[0].get("generated_text") or data[0].get("text")
+if text:
+return text.strip(), None
+if isinstance(data, dict) and "generated_text" in data:
+return data["generated_text"].strip(), None
+if isinstance(data, str):
+return data.strip(), None
 
-if st.button("Generate Meme Caption", disabled=not (image_file and api_key)):
-    with st.spinner("Generating caption..."):
-        caption = generate_caption(user_input, api_key)
 
-    st.subheader("Generated Caption:")
-    st.success(caption)
+# Fallback: try to str() the JSON
+return str(data).strip(), None
 
-    meme = add_caption_to_image(image, caption)
 
-    st.image(meme, caption="Meme Output", width=500)
 
-    buf = BytesIO()
-    meme.save(buf, format="PNG")
-    byte_im = buf.getvalue()
 
-    st.download_button(
-        label="Download Meme",
-        data=byte_im,
-        file_name="meme.png",
-        mime="image/png"
-    )
-
-st.markdown("---")
-st.info("You can deploy this repo directly on Streamlit Cloud. Just push this file to GitHub.")
+def generate_caption(topic: str, style: str = "funny") -> str:
+prompt = (
+f"Write a short meme caption about '{topic}' in a {style} style. Keep it punchy, one or two short lines, good for a meme."
+)
+text, err = call_hf_text_model(prompt)
+if err or not text:
+# Fallback local captions (small deterministic list) if HF fails
+fallback = [
+"When you realize it's Monday again...",
+"Me: *tries once*\nAlso me: *already an expert*",
+"That face you make when Wi‑Fi dies",
+"I asked for coffee, got an emotional support mug instead",
+]
+return fallback[hash(topic) % len(fallback)]
+# Clean and shorten
+text = text.replace("\n", " ").strip()
+# Sometimes models produce long text; keep only first two short sentences / 120 chars
+if len(text) > 140:
+text = textwrap.shorten(text, width=120, placeholder="...")
+st.markdown("Made with ❤ — MemeGen Pro. Deployed easily to Steamlit Cloud rfrom GitHub.")
